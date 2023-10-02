@@ -81,8 +81,8 @@ window.addEventListener("load", () => {
 
   socket.on("connect", async () => {
     console.log("client: connected to websocket");
-//    await startRecording(socket);
-    await startRadio(socket);
+    await startRecording(socket);
+//    await startRadio(socket);
   });
 
   socket.on("transcript", (transcript) => {

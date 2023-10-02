@@ -1,21 +1,17 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const { Deepgram } = require("@deepgram/sdk");
-const Rx = require('rxjs');
 const dotenv = require("dotenv");
 dotenv.config();
 const fetch = require("cross-fetch");
 
 const {translateText} = require('./translate.js');
+const {abortStream, sendStreamToDeepgram, setupDeepgram} = require('./transcript.js');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
-const client = new Deepgram(process.env.DEEPGRAM_API_KEY);
-let keepAlive;
 
-const transcriptSubject = new Rx.Subject();
 
 const TIME_LIMIT = 20
 const url = "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service"
@@ -23,69 +19,6 @@ const url = "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service"
 // Keep track of how many subscribers to each language
 let subscriberList = {};
 
-
-const setupDeepgram = (socket) => {
-  const deepgram = client.transcription.live({
-    language: "en",
-    punctuate: true,
-    smart_format: true,
-    model: "nova",
-  });
-
-  if (keepAlive) clearInterval(keepAlive);
-  keepAlive = setInterval(() => {
-    console.log("deepgram: keepalive");
-    deepgram.keepAlive();
-  }, 10 * 1000);
-
-  deepgram.addListener("open", async () => {
-    console.log("deepgram: connected");
-
-    deepgram.addListener("close", async () => {
-      console.log("deepgram: disconnected");
-      clearInterval(keepAlive);
-      deepgram.finish();
-    });
-
-    deepgram.addListener("error", async (error) => {
-      console.log("deepgram: error recieved");
-      console.error(error);
-    });
-
-    deepgram.addListener("transcriptReceived", (packet) => {
-      console.log("deepgram: packet received");
-      const data = JSON.parse(packet);
-      const { type } = data;
-      switch (type) {
-        case "Results":
-          console.log("deepgram: transcript received");
-          const transcript = data.channel.alternatives[0].transcript ?? "";
-          transcriptSubject.next(transcript);
-          console.log("socket: transcript sent to client");
-          socket.emit("transcript", transcript);
-          break;
-        case "Metadata":
-          console.log("deepgram: metadata received");
-          break;
-        default:
-          console.log("deepgram: unknown packet received");
-          break;
-      }
-    });
-  });
-
-  return deepgram;
-};
-
-transcriptSubject.subscribe(async (transcript) => {
-  console.log(`Subject received: ${transcript}`);
-
-  // For now emit on 2 languages 
-  let germanText = await translateText("de", transcript);
-  let frenchText = await translateText("fr", transcript);
-  io.in('de').emit('translated', germanText);
-  io.in('fr').emit('translated', frenchText);
-});
 
 io.on("connection", (socket) => {
   console.log("socket: client connected");
@@ -126,28 +59,11 @@ io.on("connection", (socket) => {
     socket.leave(language);
   });
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
   socket.on('startStream', () => {
-    fetch(url, { signal: controller.signal })
-      .then((r) => r.body)
-      .then((res) => {
-        res.on("readable", () => {
-          if (deepgram.getReadyState() === 1) {
-            deepgram.send(res.read());
-          }
-        })
-      })
-      .catch((error) => {
-        console.log(`Caught error: ${error}`);
-      })
-      .finally(() => {
-        clearTimeout(timeoutId);
-      });
+    sendStreamToDeepgram(deepgram, url);
   });
   socket.on('stopStream', () => {
-    controller.abort();  
-    clearTimeout(timeoutId);
+    abortStream();
   });
 
 });
