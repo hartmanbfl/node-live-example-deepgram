@@ -1,4 +1,10 @@
+
+
 const captions = window.document.getElementById("captions");
+const languages = window.document.getElementById("selectLang");
+
+let currentLang = "en";
+
 
 async function getMicrophone() {
   const userMedia = await navigator.mediaDevices.getUserMedia({
@@ -31,7 +37,7 @@ async function closeMicrophone(microphone) {
   microphone.stop();
 }
 
-async function start(socket) {
+async function startRecording(socket) {
   const listenButton = document.getElementById("record");
   let microphone;
 
@@ -49,15 +55,54 @@ async function start(socket) {
   });
 }
 
+async function startRadio(socket) {
+  const listenButton = document.getElementById("record");
+  let radio;
+  listenButton.addEventListener("click", async () => {
+    if (!radio) {
+      radio = "ON"
+      await startStreaming(socket);
+    } else {
+      await stopStreaming(socket);
+      radio = undefined;
+    }
+  })
+}
+
+async function startStreaming(socket) {
+  socket.emit("startStream");    
+}
+async function stopStreaming(socket) {
+  socket.emit("stopStream");    
+}
+
 window.addEventListener("load", () => {
   const socket = io((options = { transports: ["websocket"] }));
 
   socket.on("connect", async () => {
     console.log("client: connected to websocket");
-    await start(socket);
+//    await startRecording(socket);
+    await startRadio(socket);
   });
 
   socket.on("transcript", (transcript) => {
     captions.innerHTML = transcript ? `<span>${transcript}</span>` : "";
   });
+
+  // Subscribe to translations
+//  socket.emit('subscribe', 'de');
+  socket.on('translated', (translated) => {
+    console.log(`Received translation: ${translated}`);
+    translations.innerHTML = translated ? `<span>${translated}</span>` : "";
+  });
+
+  languages.addEventListener("change", function() {
+    let selectedLang = languages.options[languages.selectedIndex].value;
+    if (selectedLang != currentLang) {
+      socket.emit('unsubscribe', currentLang);
+      currentLang = selectedLang;
+    }
+    console.log(`Selected language: ${selectedLang}`);
+    socket.emit("subscribe", selectedLang);
+  })
 });

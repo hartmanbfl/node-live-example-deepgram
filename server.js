@@ -2,14 +2,27 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { Deepgram } = require("@deepgram/sdk");
+const Rx = require('rxjs');
 const dotenv = require("dotenv");
 dotenv.config();
+const fetch = require("cross-fetch");
+
+const {translateText} = require('./translate.js');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 const client = new Deepgram(process.env.DEEPGRAM_API_KEY);
 let keepAlive;
+
+const transcriptSubject = new Rx.Subject();
+
+const TIME_LIMIT = 20
+const url = "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service"
+
+// Keep track of how many subscribers to each language
+let subscriberList = {};
+
 
 const setupDeepgram = (socket) => {
   const deepgram = client.transcription.live({
@@ -47,6 +60,7 @@ const setupDeepgram = (socket) => {
         case "Results":
           console.log("deepgram: transcript received");
           const transcript = data.channel.alternatives[0].transcript ?? "";
+          transcriptSubject.next(transcript);
           console.log("socket: transcript sent to client");
           socket.emit("transcript", transcript);
           break;
@@ -62,6 +76,16 @@ const setupDeepgram = (socket) => {
 
   return deepgram;
 };
+
+transcriptSubject.subscribe(async (transcript) => {
+  console.log(`Subject received: ${transcript}`);
+
+  // For now emit on 2 languages 
+  let germanText = await translateText("de", transcript);
+  let frenchText = await translateText("fr", transcript);
+  io.in('de').emit('translated', germanText);
+  io.in('fr').emit('translated', frenchText);
+});
 
 io.on("connection", (socket) => {
   console.log("socket: client connected");
@@ -91,6 +115,41 @@ io.on("connection", (socket) => {
     deepgram.removeAllListeners();
     deepgram = null;
   });
+
+  socket.on("subscribe", (language) => {
+    console.log(`Subscribing to ${language}`);
+    socket.join(language);
+  });
+
+  socket.on('unsubscribe', (language) => {
+    console.log(`Unsubscribing from ${language}`);
+    socket.leave(language);
+  });
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+  socket.on('startStream', () => {
+    fetch(url, { signal: controller.signal })
+      .then((r) => r.body)
+      .then((res) => {
+        res.on("readable", () => {
+          if (deepgram.getReadyState() === 1) {
+            deepgram.send(res.read());
+          }
+        })
+      })
+      .catch((error) => {
+        console.log(`Caught error: ${error}`);
+      })
+      .finally(() => {
+        clearTimeout(timeoutId);
+      });
+  });
+  socket.on('stopStream', () => {
+    controller.abort();  
+    clearTimeout(timeoutId);
+  });
+
 });
 
 app.use(express.static("public/"));
